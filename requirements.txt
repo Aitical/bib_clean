@@ -1,0 +1,3 @@
+typer
+rich
+bibtexparser>=1.4.0
