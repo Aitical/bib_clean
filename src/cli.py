@@ -1,15 +1,15 @@
 import typer
 from rich.console import Console
 from rich.table import Table
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pathlib import Path
 import sqlite3
 import json
+import csv
 from collections import defaultdict
+import os
 
-# Use relative imports if running as package, but for direct execution we might need setup.
-# Assuming we run as python -m src.cli
-from src import db, parser, deduplicator, tex_updater
+from src import db, parser, deduplicator, tex_updater, matcher
 
 app = typer.Typer()
 console = Console()
@@ -83,12 +83,9 @@ def resolve():
     clusters = [r[0] for r in cursor.fetchall()]
 
     for cid in clusters:
-        # Check if any in this cluster are already processed (status != pending)
-        # If so, maybe skip? For now, we revisit them.
         cursor.execute("SELECT * FROM entries WHERE cluster_id = ?", (cid,))
         rows = cursor.fetchall()
 
-        # If all rows have same final_key and status!=pending, skip
         if all(row['status'] != 'pending' for row in rows):
             continue
 
@@ -133,10 +130,7 @@ def resolve():
             primary_row = options[choice]
             primary_key = primary_row['original_key']
 
-            # Update Primary
             cursor.execute("UPDATE entries SET status='primary', final_key=? WHERE id=?", (primary_key, primary_id))
-
-            # Update others as duplicate
             for row in rows:
                 if row['id'] != primary_id:
                     cursor.execute("UPDATE entries SET status='duplicate', final_key=? WHERE id=?", (primary_key, row['id']))
@@ -146,22 +140,12 @@ def resolve():
             console.print("Skipped (kept separate).")
 
     # 2. Handle Unique Pending
-    # Set all pending unique entries to primary
-    # Note: Only if cluster_id IS NULL.
-    # If cluster_id was set but we skipped it ('s'), they remain pending?
-    # If user chose 's', we should probably set them to 'primary' but keep their own keys?
-    # For now, let's just auto-promote pending items that are NOT clustered.
     cursor.execute("UPDATE entries SET status='primary', final_key=original_key WHERE status='pending' AND cluster_id IS NULL")
     conn.commit()
-
-    # Also promote items in clusters that were skipped?
-    # If status is still pending, it means we skipped.
-    # Let's promote them to primary with their own keys.
     cursor.execute("UPDATE entries SET status='primary', final_key=original_key WHERE status='pending'")
     conn.commit()
 
-    # 3. Handle Collisions (Same Key, Different Content, Both Primary)
-    # Get all primary keys that have count > 1
+    # 3. Handle Collisions
     cursor.execute("""
     SELECT final_key, COUNT(*) as c
     FROM entries
@@ -189,6 +173,111 @@ def resolve():
     conn.close()
 
 @app.command()
+def normalize(
+    csv_path: Optional[Path] = typer.Option(None, "--csv-path", "-c", help="Path to CSV with canonical strings (cols: abbr, name)"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="OpenAI API Key (or set OPENAI_API_KEY env)"),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="OpenAI Base URL (or set OPENAI_BASE_URL env)"),
+    model: str = typer.Option("gpt-3.5-turbo", "--model", help="LLM Model to use"),
+    review: bool = typer.Option(False, "--review", help="Interactive review of LLM matches")
+):
+    """
+    Normalizes journal/conference names to canonical keys using Fuzzy Matching + LLM.
+    """
+    conn = db.get_connection()
+    db.init_db(conn)
+
+    # 1. Import CSV
+    if csv_path and csv_path.exists():
+        console.print(f"Importing canonical strings from {csv_path}...")
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                count = 0
+                for row in reader:
+                    # Expect 'abbr' and 'name'
+                    key = row.get('abbr') or row.get('key')
+                    name = row.get('name') or row.get('value')
+
+                    if key and name:
+                        db.upsert_canonical_string(conn, key.strip(), name.strip())
+                        # Also add exact match
+                        db.upsert_string_mapping(conn, name.strip(), key.strip(), 'csv_exact', 1.0, 1)
+                        db.upsert_string_mapping(conn, key.strip(), key.strip(), 'csv_exact', 1.0, 1)
+                        count += 1
+            console.print(f"[green]Imported {count} canonical strings.[/green]")
+        except Exception as e:
+            console.print(f"[red]Error importing CSV: {e}[/red]")
+
+    # 2. Run Matching
+    f_matcher = matcher.FuzzyMatcher(conn, api_key=api_key, base_url=base_url, model=model)
+
+    console.print("Scanning entries for unmapped strings...")
+    cursor = conn.cursor()
+    cursor.execute("SELECT raw_bib_json FROM entries")
+    rows = cursor.fetchall()
+
+    unique_strings = set()
+    for row in rows:
+        data = json.loads(row['raw_bib_json'])
+        for field in ['journal', 'booktitle', 'publisher']:
+            val = data.get(field)
+            if val and isinstance(val, str):
+                unique_strings.add(val)
+
+    # Filter out existing mappings
+    existing_maps = db.get_all_string_mappings(conn)
+    to_process = [s for s in unique_strings if s not in existing_maps]
+
+    console.print(f"Found {len(to_process)} unmapped strings.")
+
+    new_maps = 0
+    if to_process:
+        with typer.progressbar(to_process, label="Matching") as progress:
+            for s in progress:
+                res = f_matcher.match(s)
+                if res.key:
+                    db.upsert_string_mapping(
+                        conn,
+                        s,
+                        res.key,
+                        res.source,
+                        res.confidence,
+                        1 if res.source == 'exact' else 0
+                    )
+                    new_maps += 1
+
+    console.print(f"[green]Normalization loop complete. {new_maps} new mappings found.[/green]")
+
+    # 3. Review
+    if review:
+        cursor.execute("SELECT * FROM string_mappings WHERE is_verified = 0")
+        pending = cursor.fetchall()
+
+        if not pending:
+            console.print("No pending mappings to review.")
+        else:
+            console.print(f"Reviewing {len(pending)} mappings...")
+            for row in pending:
+                orig = row['original_string']
+                mapped = row['mapped_key']
+                source = row['source']
+                conf = row['confidence']
+
+                choice = typer.prompt(
+                    f"Map '{orig}' -> '{mapped}' ({source}, {conf})? [y/n/skip]",
+                    default="y"
+                )
+
+                if choice.lower() == 'y':
+                    cursor.execute("UPDATE string_mappings SET is_verified = 1 WHERE original_string = ?", (orig,))
+                elif choice.lower() == 'n':
+                    cursor.execute("DELETE FROM string_mappings WHERE original_string = ?", (orig,))
+                    console.print("Mapping removed.")
+            conn.commit()
+
+    conn.close()
+
+@app.command()
 def export(output: Path):
     """
     Exports the merged and deduplicated BibTeX file.
@@ -196,27 +285,39 @@ def export(output: Path):
     conn = db.get_connection()
     cursor = conn.cursor()
 
+    # Load Normalization Maps
+    string_defs = db.get_canonical_strings(conn)
+    string_maps = db.get_all_string_mappings(conn)
+
     cursor.execute("SELECT * FROM entries WHERE status='primary'")
     rows = cursor.fetchall()
 
     try:
         with open(output, 'w', encoding='utf-8') as f:
+            f.write("% String Definitions\n")
+            for k in sorted(string_defs.keys()):
+                val = string_defs[k]
+                f.write(f'@String{{{k} = "{val}"}}\n')
+            f.write("\n")
+
             for row in rows:
                 data = json.loads(row['raw_bib_json'])
-                # Update ID to final_key
                 data['ID'] = row['final_key']
 
-                # Manual BibTeX dump
                 entry_type = data.get('ENTRYTYPE', 'article')
                 f.write(f"@{entry_type}{{{data['ID']},\n")
 
-                # Sort keys for consistent output
                 for k in sorted(data.keys()):
                     if k in ['ENTRYTYPE', 'ID']: continue
                     v = data[k]
-                    # Escape braces if needed? Usually bibtexparser handles parsing,
-                    # raw strings might be safe enough if they came from bibtexparser.
-                    f.write(f"  {k} = {{{v}}},\n")
+
+                    # Check mapping
+                    # Ensure v is string and map has it
+                    if isinstance(v, str) and v in string_maps:
+                        mapped_key = string_maps[v]
+                        f.write(f"  {k} = {mapped_key},\n")
+                    else:
+                        f.write(f"  {k} = {{{v}}},\n")
                 f.write("}\n\n")
 
         console.print(f"[green]Exported {len(rows)} entries to {output}[/green]")
@@ -233,15 +334,10 @@ def update_tex(tex_path: Path):
     conn = db.get_connection()
     cursor = conn.cursor()
 
-    # Build Key Map
-    # Map OriginalKey -> FinalKey
     key_map = {}
-
-    # Get all mappings where key changed
     cursor.execute("SELECT original_key, final_key FROM entries WHERE status='primary' OR status='duplicate'")
     all_maps = cursor.fetchall()
 
-    # Detect ambiguities
     temp_map = defaultdict(set)
     for row in all_maps:
         if row['original_key'] != row['final_key']:
@@ -252,7 +348,7 @@ def update_tex(tex_path: Path):
         if len(v_set) == 1:
             final_map[k] = list(v_set)[0]
         else:
-            console.print(f"[red]Warning: Key '{k}' maps to multiple final keys: {v_set}. Skipping update for this key to avoid incorrect citation.[/red]")
+            console.print(f"[red]Warning: Key '{k}' maps to multiple final keys: {v_set}. Skipping update.[/red]")
 
     if not final_map:
         console.print("No key changes needed.")

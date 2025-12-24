@@ -58,6 +58,25 @@ def init_db(conn: sqlite3.Connection):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_entries_cluster ON entries(cluster_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_entries_orig_key ON entries(original_key);")
 
+    # String Normalization Tables
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS canonical_strings (
+        key TEXT PRIMARY KEY,
+        full_name TEXT NOT NULL
+    );
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS string_mappings (
+        original_string TEXT PRIMARY KEY,
+        mapped_key TEXT NOT NULL,
+        source TEXT NOT NULL,
+        confidence REAL DEFAULT 1.0,
+        is_verified INTEGER DEFAULT 0,
+        FOREIGN KEY(mapped_key) REFERENCES canonical_strings(key)
+    );
+    """)
+
     conn.commit()
 
 def add_source(conn: sqlite3.Connection, filepath: str) -> int:
@@ -106,3 +125,39 @@ def add_entry(
     ))
     conn.commit()
     return cursor.lastrowid
+
+def upsert_canonical_string(conn: sqlite3.Connection, key: str, full_name: str):
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO canonical_strings (key, full_name) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET full_name=excluded.full_name
+    """, (key, full_name))
+    conn.commit()
+
+def upsert_string_mapping(conn: sqlite3.Connection, original: str, mapped_key: str, source: str, confidence: float = 1.0, is_verified: int = 0):
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO string_mappings (original_string, mapped_key, source, confidence, is_verified)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(original_string) DO UPDATE SET
+        mapped_key=excluded.mapped_key,
+        source=excluded.source,
+        confidence=excluded.confidence,
+        is_verified=excluded.is_verified
+    """, (original, mapped_key, source, confidence, is_verified))
+    conn.commit()
+
+def get_canonical_strings(conn: sqlite3.Connection) -> Dict[str, str]:
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, full_name FROM canonical_strings")
+    return {row['key']: row['full_name'] for row in cursor.fetchall()}
+
+def get_string_mapping(conn: sqlite3.Connection, original: str) -> Optional[sqlite3.Row]:
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM string_mappings WHERE original_string = ?", (original,))
+    return cursor.fetchone()
+
+def get_all_string_mappings(conn: sqlite3.Connection) -> Dict[str, str]:
+    cursor = conn.cursor()
+    cursor.execute("SELECT original_string, mapped_key FROM string_mappings")
+    return {row['original_string']: row['mapped_key'] for row in cursor.fetchall()}
