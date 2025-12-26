@@ -9,7 +9,7 @@ from src import db
 @dataclass
 class MatchResult:
     key: Optional[str]
-    source: str  # 'exact', 'llm', 'none', 'error'
+    source: str  # 'exact', 'heuristic', 'llm', 'none', 'error'
     confidence: float
 
 class FuzzyMatcher:
@@ -40,25 +40,48 @@ class FuzzyMatcher:
             return MatchResult(None, 'none', 0.0)
 
         raw_lower = raw_string.strip().lower()
-        # Remove braces if present? (Bibtex sometimes has {Journal})
-        # parser.py might handle it, but raw_string here comes from DB json.
+        # Remove braces if present
         raw_lower = raw_lower.strip('{}')
 
         # 1. Exact Match
         if raw_lower in self.exact_map:
             return MatchResult(self.exact_map[raw_lower], 'exact', 1.0)
 
-        # 2. LLM Match
+        # 2. Heuristic Match
+        # Check if any canonical Key appears as a whole word in raw_string
+        # Useful for patterns like "Proceedings of the CVPR" where CVPR is the key
+        heuristic_res = self._heuristic_match(raw_string)
+        if heuristic_res.key:
+            return heuristic_res
+
+        # 3. LLM Match
         if self.client:
             return self._llm_match(raw_string)
 
         return MatchResult(None, 'none', 0.0)
 
+    def _heuristic_match(self, raw_string: str) -> MatchResult:
+        matches = []
+        raw_lower = raw_string.lower()
+
+        for key in self.canonical.keys():
+            # Skip very short keys to avoid false positives (e.g. "A", "In")
+            if len(key) < 2:
+                continue
+
+            # Check for whole word match
+            pattern = r'\b' + re.escape(key.lower()) + r'\b'
+            if re.search(pattern, raw_lower):
+                matches.append(key)
+
+        if len(matches) == 1:
+            return MatchResult(matches[0], 'heuristic', 0.8)
+
+        # If multiple matches, it's ambiguous. Return None.
+        return MatchResult(None, 'none', 0.0)
+
     def _llm_match(self, raw_string: str) -> MatchResult:
         # Pre-filter candidates to avoid huge prompts
-        # Strategy: word overlap + Jaccard similarity or simple inclusion
-        # Since we deal with abbreviations, we must be careful.
-
         raw_tokens = set(re.findall(r'\w+', raw_string.lower()))
 
         scored_candidates = []
