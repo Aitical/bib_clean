@@ -8,6 +8,9 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # BibTeX mandatory fields by type (or mandatory field groups).
 # Each inner list means "at least one of these fields must exist".
+# Required field groups by entry type:
+# - Each outer item is a mandatory group.
+# - Each inner list contains alternatives, where at least one field must be present.
 ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
     "article": [["author"], ["title"], ["journal"], ["year"]],
     "book": [["author", "editor"], ["title"], ["publisher"], ["year"]],
@@ -32,11 +35,10 @@ def _non_empty(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _collect_required_fields(entry_type: str) -> List[str]:
-    groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
+def _collect_required_fields(required_groups: List[List[str]]) -> List[str]:
     fields = []
     seen = set()
-    for group in groups:
+    for group in required_groups:
         for field in group:
             if field not in seen:
                 fields.append(field)
@@ -61,7 +63,7 @@ def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
     raw_entry_type = str(entry.get("ENTRYTYPE", "")).strip().lower()
     entry_type = raw_entry_type if raw_entry_type else "misc"
     required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
-    required_fields = _collect_required_fields(entry_type)
+    required_fields = _collect_required_fields(required_groups)
 
     sanitized = {
         "ENTRYTYPE": entry_type,
@@ -74,7 +76,7 @@ def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
             sanitized[field] = value.strip()
 
     for group in required_groups:
-        if any(_non_empty(sanitized.get(field)) for field in group):
+        if any(_non_empty(entry.get(field)) for field in group):
             continue
         return None, f"missing required fields: one of {group}"
 
