@@ -3,7 +3,71 @@ import bibtexparser
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
+
+# BibTeX mandatory fields by type (or mandatory field groups).
+# Each inner list means "at least one of these fields must exist".
+ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
+    "article": [["author"], ["title"], ["journal"], ["year"]],
+    "book": [["title"], ["publisher"], ["year"], ["author", "editor"]],
+    "inproceedings": [["author"], ["title"], ["booktitle"], ["year"]],
+    "conference": [["author"], ["title"], ["booktitle"], ["year"]],
+    "incollection": [["author"], ["title"], ["booktitle"], ["publisher"], ["year"]],
+    "inbook": [["title"], ["publisher"], ["year"], ["author", "editor"], ["chapter", "pages"]],
+    "proceedings": [["title"], ["year"]],
+    "phdthesis": [["author"], ["title"], ["school"], ["year"]],
+    "mastersthesis": [["author"], ["title"], ["school"], ["year"]],
+    "techreport": [["author"], ["title"], ["institution"], ["year"]],
+    "booklet": [["title"]],
+    "manual": [["title"]],
+    "unpublished": [["author"], ["title"], ["note"]],
+    "misc": [],
+}
+
+
+def _non_empty(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _required_whitelist(entry_type: str) -> List[str]:
+    groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, [["title"]])
+    fields = []
+    for group in groups:
+        for field in group:
+            if field not in fields:
+                fields.append(field)
+    return fields
+
+
+def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Keep only required BibTeX keys and verify mandatory fields exist.
+    Returns (sanitized_entry, error_message).
+    """
+    original_key = str(entry.get("ID", "")).strip()
+    if not original_key:
+        return None, "missing citation key (ID)"
+
+    entry_type = str(entry.get("ENTRYTYPE", "misc")).strip().lower() or "misc"
+    required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, [["title"]])
+    whitelist = _required_whitelist(entry_type)
+
+    sanitized = {
+        "ENTRYTYPE": entry_type,
+        "ID": original_key,
+    }
+
+    for field in whitelist:
+        value = entry.get(field)
+        if _non_empty(value):
+            sanitized[field] = value.strip()
+
+    for group in required_groups:
+        if any(_non_empty(sanitized.get(field)) for field in group):
+            continue
+        return None, f"missing required fields: one of {group}"
+
+    return sanitized, None
 
 def normalize_title(title: str) -> str:
     """
@@ -70,11 +134,20 @@ def parse_bib_file(filepath: Path) -> List[Dict[str, Any]]:
     """
     try:
         with open(filepath, 'r', encoding='utf-8') as bibtex_file:
-            parser = BibTexParser()
+            parser = BibTexParser(common_strings=True)
             # use convert_to_unicode to handle special latex chars
             parser.customization = convert_to_unicode
+            parser.ignore_nonstandard_types = False
             bib_database = bibtexparser.load(bibtex_file, parser=parser)
-        return bib_database.entries
+        sanitized_entries: List[Dict[str, Any]] = []
+        for entry in bib_database.entries:
+            cleaned, err = sanitize_entry(entry)
+            if cleaned is not None:
+                sanitized_entries.append(cleaned)
+            else:
+                skipped_key = entry.get("ID", "<missing-id>")
+                print(f"Skip invalid entry '{skipped_key}' in {filepath.name}: {err}")
+        return sanitized_entries
     except Exception as e:
         print(f"Error parsing {filepath}: {e}")
         return []
