@@ -1,4 +1,5 @@
 import re
+import logging
 import bibtexparser
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
@@ -24,6 +25,7 @@ ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
     "misc": [],
 }
 DEFAULT_REQUIRED_GROUPS: List[List[str]] = ENTRY_REQUIRED_FIELD_GROUPS["misc"]
+logger = logging.getLogger(__name__)
 
 
 def _non_empty(value: Any) -> bool:
@@ -33,17 +35,24 @@ def _non_empty(value: Any) -> bool:
 def _required_whitelist(entry_type: str) -> List[str]:
     groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
     fields = []
+    seen = set()
     for group in groups:
         for field in group:
-            if field not in fields:
+            if field not in seen:
                 fields.append(field)
+                seen.add(field)
     return fields
 
 
 def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Keep only required BibTeX keys and verify mandatory fields exist.
-    Returns (sanitized_entry, error_message).
+    Args:
+        entry: Parsed BibTeX entry dictionary from bibtexparser.
+    Returns:
+        (sanitized_entry, error_message):
+        - sanitized_entry is a cleaned entry dict when valid, otherwise None.
+        - error_message is a short reason when invalid, otherwise None.
     """
     original_key = str(entry.get("ID", "")).strip()
     if not original_key:
@@ -147,10 +156,10 @@ def parse_bib_file(filepath: Path) -> List[Dict[str, Any]]:
                 sanitized_entries.append(cleaned)
             else:
                 skipped_key = entry.get("ID", "(no ID)")
-                print(f"Skip invalid entry '{skipped_key}' in {filepath.name}: {err}")
+                logger.warning("Skip invalid entry '%s' in %s: %s", skipped_key, filepath.name, err)
         return sanitized_entries
     except Exception as e:
-        print(f"Error parsing {filepath}: {e}")
+        logger.error("Error parsing %s: %s", filepath, e)
         return []
 
 def get_entry_fingerprints(entry: Dict[str, Any]) -> Dict[str, Any]:
