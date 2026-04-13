@@ -23,6 +23,7 @@ ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
     "unpublished": [["author"], ["title"], ["note"]],
     "misc": [],
 }
+DEFAULT_REQUIRED_GROUPS: List[List[str]] = ENTRY_REQUIRED_FIELD_GROUPS["misc"]
 
 
 def _non_empty(value: Any) -> bool:
@@ -30,7 +31,7 @@ def _non_empty(value: Any) -> bool:
 
 
 def _required_whitelist(entry_type: str) -> List[str]:
-    groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, [["title"]])
+    groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
     fields = []
     for group in groups:
         for field in group:
@@ -49,7 +50,7 @@ def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
         return None, "missing citation key (ID)"
 
     entry_type = str(entry.get("ENTRYTYPE", "misc")).strip().lower() or "misc"
-    required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, [["title"]])
+    required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
     whitelist = _required_whitelist(entry_type)
 
     sanitized = {
@@ -145,7 +146,7 @@ def parse_bib_file(filepath: Path) -> List[Dict[str, Any]]:
             if cleaned is not None:
                 sanitized_entries.append(cleaned)
             else:
-                skipped_key = entry.get("ID", "<missing-id>")
+                skipped_key = entry.get("ID", "(no ID)")
                 print(f"Skip invalid entry '{skipped_key}' in {filepath.name}: {err}")
         return sanitized_entries
     except Exception as e:
