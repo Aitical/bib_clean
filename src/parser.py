@@ -10,11 +10,11 @@ from typing import List, Dict, Any, Optional, Tuple
 # Each inner list means "at least one of these fields must exist".
 ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
     "article": [["author"], ["title"], ["journal"], ["year"]],
-    "book": [["title"], ["publisher"], ["year"], ["author", "editor"]],
+    "book": [["author", "editor"], ["title"], ["publisher"], ["year"]],
     "inproceedings": [["author"], ["title"], ["booktitle"], ["year"]],
     "conference": [["author"], ["title"], ["booktitle"], ["year"]],
     "incollection": [["author"], ["title"], ["booktitle"], ["publisher"], ["year"]],
-    "inbook": [["title"], ["publisher"], ["year"], ["author", "editor"], ["chapter", "pages"]],
+    "inbook": [["author", "editor"], ["chapter", "pages"], ["title"], ["publisher"], ["year"]],
     "proceedings": [["title"], ["year"]],
     "phdthesis": [["author"], ["title"], ["school"], ["year"]],
     "mastersthesis": [["author"], ["title"], ["school"], ["year"]],
@@ -58,7 +58,8 @@ def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
     if not original_key:
         return None, "missing citation key (ID)"
 
-    entry_type = str(entry.get("ENTRYTYPE", "misc")).strip().lower() or "misc"
+    raw_entry_type = str(entry.get("ENTRYTYPE", "")).strip().lower()
+    entry_type = raw_entry_type if raw_entry_type else "misc"
     required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
     whitelist = _required_whitelist(entry_type)
 
@@ -144,6 +145,7 @@ def parse_bib_file(filepath: Path) -> List[Dict[str, Any]]:
     """
     try:
         with open(filepath, 'r', encoding='utf-8') as bibtex_file:
+            # Parse @String and common month tokens for more accurate BibTeX parsing.
             parser = BibTexParser(common_strings=True)
             # use convert_to_unicode to handle special latex chars
             parser.customization = convert_to_unicode
