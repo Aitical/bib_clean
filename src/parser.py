@@ -32,7 +32,7 @@ def _non_empty(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _required_whitelist(entry_type: str) -> List[str]:
+def _collect_required_fields(entry_type: str) -> List[str]:
     groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
     fields = []
     seen = set()
@@ -61,14 +61,14 @@ def sanitize_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
     raw_entry_type = str(entry.get("ENTRYTYPE", "")).strip().lower()
     entry_type = raw_entry_type if raw_entry_type else "misc"
     required_groups = ENTRY_REQUIRED_FIELD_GROUPS.get(entry_type, DEFAULT_REQUIRED_GROUPS)
-    whitelist = _required_whitelist(entry_type)
+    required_fields = _collect_required_fields(entry_type)
 
     sanitized = {
         "ENTRYTYPE": entry_type,
         "ID": original_key,
     }
 
-    for field in whitelist:
+    for field in required_fields:
         value = entry.get(field)
         if _non_empty(value):
             sanitized[field] = value.strip()
