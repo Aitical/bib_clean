@@ -9,6 +9,8 @@
 - **Key 冲突处理**: 自动检测同 Key 不同文的情况并重命名。
 - **Tex 更新**: 自动扫描 `.tex` 文件并替换为最终的 Key，安全避开注释。
 - **字段精简与校验**: 仅保留各 Bib 类型的必备字段，缺失必备字段或缺失引用 Key 的条目会被跳过。
+  - `article` 必备: `author/title/journal/volume/number/pages/year/doi`
+  - `inproceedings` 与 `conference` 必备: `author/title/booktitle/year/doi`
 
 ## 安装
 

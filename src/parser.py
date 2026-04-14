@@ -12,10 +12,10 @@ from typing import List, Dict, Any, Optional, Tuple
 # - Each outer item is a mandatory group.
 # - Each inner list contains alternatives, where at least one field must be present.
 ENTRY_REQUIRED_FIELD_GROUPS: Dict[str, List[List[str]]] = {
-    "article": [["author"], ["title"], ["journal"], ["year"]],
+    "article": [["author"], ["title"], ["journal"], ["volume"], ["number"], ["pages"], ["year"], ["doi"]],
     "book": [["author", "editor"], ["title"], ["publisher"], ["year"]],
-    "inproceedings": [["author"], ["title"], ["booktitle"], ["year"]],
-    "conference": [["author"], ["title"], ["booktitle"], ["year"]],
+    "inproceedings": [["author"], ["title"], ["booktitle"], ["year"], ["doi"]],
+    "conference": [["author"], ["title"], ["booktitle"], ["year"], ["doi"]],
     "incollection": [["author"], ["title"], ["booktitle"], ["publisher"], ["year"]],
     "inbook": [["author", "editor"], ["chapter", "pages"], ["title"], ["publisher"], ["year"]],
     "proceedings": [["title"], ["year"]],
